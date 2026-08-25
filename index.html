@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadIB Upload</title>
+<style>
+  html,body{margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f1f3f4;color:#202124}
+  .wrap{max-width:420px;margin:0 auto;padding:18px 14px}
+  .card{background:#fff;border:1px solid #dadce0;border-radius:10px;padding:18px;margin-top:14px}
+  h1{font-size:17px;margin:6px 0 0;text-align:center}
+  .sub{font-size:12px;color:#5f6368;text-align:center;margin-top:4px}
+  .big{font-size:20px;font-weight:bold;text-align:center;margin:10px 0}
+  .muted{font-size:12px;color:#5f6368;text-align:center}
+  button{font-size:15px;padding:10px 16px;border-radius:8px;border:1px solid #dadce0;background:#fff;cursor:pointer;width:100%;margin-top:10px}
+  button.pri{background:#1a73e8;color:#fff;border-color:#1a73e8;font-weight:bold}
+  button:disabled{opacity:.5;cursor:default}
+  input[type=text],select{font-size:15px;padding:9px;border:1px solid #dadce0;border-radius:8px;width:100%;box-sizing:border-box;margin-top:8px}
+  .drop{border:2px dashed #9aa0a6;border-radius:10px;padding:26px 10px;text-align:center;color:#5f6368;font-size:14px;margin-top:12px;background:#fafafa}
+  .drop.over{border-color:#1a73e8;background:#e8f0fe;color:#1a73e8}
+  .err{color:#c5221f;font-size:13px;text-align:center;margin-top:10px;white-space:pre-wrap}
+  .ok{color:#188038}
+  .hide{display:none}
+  .spin{margin:14px auto;width:26px;height:26px;border:3px solid #dadce0;border-top-color:#1a73e8;border-radius:50%;animation:s .8s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .fname{font-size:13px;text-align:center;color:#5f6368;margin-top:8px;word-break:break-all}
+  a.link{color:#1a73e8;font-size:12px;display:block;text-align:center;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Upload PDF</h1>
+  <div class="sub" id="who">&nbsp;</div>
+
+  <div class="card" id="noSheet" style="display:none">
+    <div class="err">This link is missing the sheet code.<br>Please open the upload page from the link in your sheet.</div>
+  </div>
+
+  <!-- STEP 1: pick cell -->
+  <div class="card hide" id="step1">
+    <div class="muted">Click the cell in your sheet where the PDF should go, then come back here.</div>
+    <div class="big" id="cellShow">Waiting for your click&hellip;</div>
+    <button class="pri hide" id="useBtn">Use this cell</button>
+    <button id="manualBtn">Type the cell instead</button>
+    <div id="manualBox" class="hide">
+      <select id="tabSel"></select>
+      <input type="text" id="cellIn" placeholder="e.g. L137" autocomplete="off">
+      <button class="pri" id="manualGo">Continue</button>
+    </div>
+    <div class="err hide" id="err1"></div>
+  </div>
+
+  <!-- STEP 2: choose file -->
+  <div class="card hide" id="step2">
+    <div class="big" id="chosen"></div>
+    <div class="drop" id="drop">Drop your PDF here<br>or tap to choose a file</div>
+    <input type="file" id="file" accept="application/pdf" class="hide">
+    <div class="fname hide" id="fname"></div>
+    <button class="pri hide" id="upBtn">Upload</button>
+    <button id="backBtn">Back</button>
+    <div class="err hide" id="err2"></div>
+  </div>
+
+  <!-- STEP 3: busy / done -->
+  <div class="card hide" id="step3">
+    <div id="busy"><div class="spin"></div><div class="muted">Uploading&hellip; please wait</div></div>
+    <div id="done" class="hide">
+      <div class="big ok">&#10003; Uploaded</div>
+      <div class="fname" id="doneName"></div>
+      <button class="pri" id="againBtn">Upload another</button>
+    </div>
+    <div class="err hide" id="err3"></div>
+  </div>
+</div>
+
+<script>
+var EXEC = "https://script.google.com/macros/s/AKfycbx11sQLqc7tSPerx7hqoCHJrvr5QClOF4JRBUeV9daYFEXGHMHV8ZfFyIVtW8ooXaP0/exec";
+var SID = new URLSearchParams(location.search).get("sheet") || "";
+var CTX = null;          // last polled context
+var pickTab = "", pickCell = "", pickHdr = "";
+var theFile = null;
+var pollTimer = null;
+
+function $(id){return document.getElementById(id);}
+function show(id){$(id).classList.remove("hide");}
+function hide(id){$(id).classList.add("hide");}
+
+function api(payload){
+  return fetch(EXEC,{method:"POST",redirect:"follow",credentials:"omit",body:JSON.stringify(payload)})
+    .then(function(r){return r.json();});
+}
+
+function previewName(){
+  if(!CTX || !CTX.student) return "";
+  var t = (pickHdr||"").replace(/[^A-Za-z0-9]+/g,"").substring(0,12) || "HW";
+  return CTX.student+"_"+(CTX.subject||"")+"_"+(CTX.ds||"")+"_"+t+".pdf";
+}
+
+function poll(){
+  api({action:"ctx",sid:SID}).then(function(r){
+    if(!r || r.error){ $("err1").textContent = r && r.error ? r.error : "Could not reach the sheet."; show("err1"); return; }
+    hide("err1");
+    CTX = r;
+    $("who").textContent = (r.student||"") + (r.subject? " • "+r.subject : "");
+    if(!r.none && r.cell){
+      $("cellShow").textContent = "You choose: " + r.cell;
+      show("useBtn");
+    }
+  }).catch(function(){ /* transient */ });
+}
+
+function startPoll(){ poll(); if(pollTimer) clearInterval(pollTimer); pollTimer = setInterval(poll, 4000); }
+function stopPoll(){ if(pollTimer){ clearInterval(pollTimer); pollTimer = null; } }
+
+function toStep2(){
+  stopPoll();
+  hide("step1"); show("step2");
+  $("chosen").textContent = "Cell: " + pickCell;
+  theFile = null; hide("fname"); hide("upBtn"); hide("err2");
+}
+
+function fileChosen(f){
+  if(!f) return;
+  if(f.type !== "application/pdf" && !/\.pdf$/i.test(f.name)){ $("err2").textContent="Please choose a PDF file."; show("err2"); return; }
+  if(f.size > 20*1024*1024){ $("err2").textContent="File is too big (max 20 MB)."; show("err2"); return; }
+  hide("err2"); theFile = f;
+  var pn = previewName();
+  $("fname").textContent = f.name + (pn ? "  →  " + pn : "");
+  show("fname"); show("upBtn");
+}
+
+function doUpload(){
+  if(!theFile) return;
+  hide("step2"); show("step3"); show("busy"); hide("done"); hide("err3");
+  var rd = new FileReader();
+  rd.onload = function(){
+    var b64 = String(rd.result).split(",")[1];
+    api({action:"upload",sid:SID,tab:pickTab,cell:pickCell,data:b64}).then(function(r){
+      hide("busy");
+      if(r && r.success){
+        $("doneName").textContent = r.filename || "";
+        show("done");
+      } else {
+        $("err3").textContent = (r && r.error) ? r.error : "Upload failed. Please try again.";
+        show("err3"); show("done");
+        $("doneName").textContent = "";
+        document.querySelector("#done .big").textContent = "Upload failed";
+        document.querySelector("#done .big").classList.remove("ok");
+      }
+    }).catch(function(e){
+      hide("busy");
+      $("err3").textContent = "Upload failed: " + e.message; show("err3");
+      show("done");
+      document.querySelector("#done .big").textContent = "Upload failed";
+      document.querySelector("#done .big").classList.remove("ok");
+    });
+  };
+  rd.readAsDataURL(theFile);
+}
+
+// wiring
+$("useBtn").onclick = function(){
+  pickTab = CTX.tab; pickCell = CTX.cell; pickHdr = CTX.hdr || "";
+  toStep2();
+};
+$("manualBtn").onclick = function(){
+  show("manualBox");
+  if(!$("tabSel").options.length){
+    api({action:"tabs",sid:SID}).then(function(list){
+      if(Array.isArray(list)){ list.forEach(function(t){ var o=document.createElement("option"); o.value=o.textContent=t; $("tabSel").appendChild(o); }); }
+    }).catch(function(){});
+  }
+};
+$("manualGo").onclick = function(){
+  var c = $("cellIn").value.trim().toUpperCase();
+  if(!/^[A-Z]{1,3}[0-9]{1,7}$/.test(c)){ $("err1").textContent="Cell must look like L137."; show("err1"); return; }
+  pickTab = $("tabSel").value || (CTX && CTX.tab) || "";
+  pickCell = c; pickHdr = "";
+  toStep2();
+};
+$("backBtn").onclick = function(){ hide("step2"); show("step1"); startPoll(); };
+$("againBtn").onclick = function(){
+  hide("step3"); show("step1");
+  $("cellShow").textContent = "Waiting for your click…"; hide("useBtn");
+  document.querySelector("#done .big").textContent = "✓ Uploaded";
+  document.querySelector("#done .big").classList.add("ok");
+  startPoll();
+};
+var drop = $("drop");
+drop.onclick = function(){ $("file").click(); };
+$("file").onchange = function(){ fileChosen(this.files[0]); };
+drop.ondragover = function(e){ e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = function(){ drop.classList.remove("over"); };
+drop.ondrop = function(e){ e.preventDefault(); drop.classList.remove("over"); fileChosen(e.dataTransfer.files[0]); };
+$("upBtn").onclick = doUpload;
+
+// boot
+if(!SID){ document.getElementById("noSheet").style.display="block"; }
+else { show("step1"); startPoll(); }
+</script>
+</body>
+</html>
