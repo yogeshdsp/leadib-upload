@@ -41,6 +41,7 @@
     <div class="muted">Click the cell in your sheet where the PDF should go, then come back here.</div>
     <div class="big" id="cellShow">Waiting for your click&hellip;</div>
     <button class="pri hide" id="useBtn">Use this cell</button>
+    <button id="refreshBtn">&#8635; Refresh</button>
     <button id="manualBtn">Type the cell instead</button>
     <div id="manualBox" class="hide">
       <select id="tabSel"></select>
@@ -105,6 +106,9 @@ function poll(){
     if(!r.none && r.cell){
       $("cellShow").textContent = "You choose: " + r.cell;
       show("useBtn");
+    } else {
+      $("cellShow").textContent = "Waiting for your click…";
+      hide("useBtn");
     }
   }).catch(function(){ /* transient */ });
 }
@@ -177,6 +181,10 @@ $("manualGo").onclick = function(){
   pickTab = $("tabSel").value || (CTX && CTX.tab) || "";
   pickCell = c; pickHdr = "";
   toStep2();
+};
+$("refreshBtn").onclick = function(){
+  $("cellShow").textContent = "Checking…"; hide("useBtn");
+  poll();
 };
 $("backBtn").onclick = function(){ hide("step2"); show("step1"); startPoll(); };
 $("againBtn").onclick = function(){
