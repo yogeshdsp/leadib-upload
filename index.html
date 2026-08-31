@@ -133,31 +133,49 @@ function fileChosen(f){
   show("fname"); show("upBtn");
 }
 
+function finishOk(name){
+  hide("busy"); hide("err3");
+  document.querySelector("#done .big").textContent = "✓ Uploaded";
+  document.querySelector("#done .big").classList.add("ok");
+  $("doneName").textContent = name || "";
+  show("done");
+}
+function finishFail(msg){
+  hide("busy");
+  $("err3").textContent = msg || "Upload failed. Please try again."; show("err3");
+  $("doneName").textContent = "";
+  document.querySelector("#done .big").textContent = "Upload failed";
+  document.querySelector("#done .big").classList.remove("ok");
+  show("done");
+}
+// Safari cannot always read the reply of a large upload (POST + redirect + big body) and used to show
+// "Upload failed" for uploads that had worked. So: after uploading, ask the sheet whether the chosen
+// cell now holds a file that was created since we started, and report THAT.
+function verifyUpload(startedAt, attempt){
+  api({action:"check",sid:SID,tab:pickTab,cell:pickCell}).then(function(c){
+    if(c && c.linked && (!c.created || c.created >= startedAt - 10*60*1000)){ finishOk(c.filename || ""); return; }
+    if(attempt < 5){ setTimeout(function(){ verifyUpload(startedAt, attempt+1); }, 3000); return; }
+    finishFail("Could not confirm the upload. Open the sheet and check the cell before uploading again.");
+  }).catch(function(){
+    if(attempt < 5){ setTimeout(function(){ verifyUpload(startedAt, attempt+1); }, 3000); return; }
+    finishFail("Could not confirm the upload. Open the sheet and check the cell before uploading again.");
+  });
+}
 function doUpload(){
   if(!theFile) return;
   hide("step2"); show("step3"); show("busy"); hide("done"); hide("err3");
+  var startedAt = Date.now();
   var rd = new FileReader();
   rd.onload = function(){
     var b64 = String(rd.result).split(",")[1];
-    api({action:"upload",sid:SID,tab:pickTab,cell:pickCell,data:b64}).then(function(r){
-      hide("busy");
-      if(r && r.success){
-        $("doneName").textContent = r.filename || "";
-        show("done");
-      } else {
-        $("err3").textContent = (r && r.error) ? r.error : "Upload failed. Please try again.";
-        show("err3"); show("done");
-        $("doneName").textContent = "";
-        document.querySelector("#done .big").textContent = "Upload failed";
-        document.querySelector("#done .big").classList.remove("ok");
-      }
-    }).catch(function(e){
-      hide("busy");
-      $("err3").textContent = "Upload failed: " + e.message; show("err3");
-      show("done");
-      document.querySelector("#done .big").textContent = "Upload failed";
-      document.querySelector("#done .big").classList.remove("ok");
-    });
+    fetch(EXEC,{method:"POST",redirect:"follow",credentials:"omit",body:JSON.stringify({action:"upload",sid:SID,tab:pickTab,cell:pickCell,data:b64})})
+      .then(function(r){ return r.json().catch(function(){ return null; }); })
+      .catch(function(){ return null; })
+      .then(function(r){
+        if(r && r.success){ finishOk(r.filename); return; }
+        if(r && r.success === false && r.error){ finishFail(r.error); return; }
+        verifyUpload(startedAt, 0);   // reply unreadable (Safari) - check the cell instead
+      });
   };
   rd.readAsDataURL(theFile);
 }
