@@ -172,7 +172,7 @@ function doUpload(){
       .then(function(r){ return r.json().catch(function(){ return null; }); })
       .catch(function(){ return null; })
       .then(function(r){
-        if(r && r.success){ finishOk(r.filename); return; }
+        if(r && r.success){ finishOk((r.filename || "") + (r.msReleased ? "  —  mark scheme added to your sheet" : "")); return; }
         if(r && r.success === false && r.error){ finishFail(r.error); return; }
         verifyUpload(startedAt, 0);   // reply unreadable (Safari) - check the cell instead
       });
