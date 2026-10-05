@@ -126,7 +126,7 @@ function toStep2(){
 function fileChosen(f){
   if(!f) return;
   if(f.type !== "application/pdf" && !/\.pdf$/i.test(f.name)){ $("err2").textContent="Please choose a PDF file."; show("err2"); return; }
-  if(f.size > 20*1024*1024){ $("err2").textContent="File is too big (max 20 MB)."; show("err2"); return; }
+  if(f.size > 5*1024*1024){ $("err2").textContent="File is too big (max 5 MB). Please compress the PDF (a scanner app at medium quality) or split it."; show("err2"); return; }
   hide("err2"); theFile = f;
   var pn = previewName();
   $("fname").textContent = f.name + (pn ? "  →  " + pn : "");
