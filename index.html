@@ -32,6 +32,13 @@
   <h1>Upload PDF</h1>
   <div class="sub" id="who">&nbsp;</div>
 
+  <!-- teacher / moderator sheets: run the staff pass now -->
+  <div class="card hide" id="staffCard">
+    <div class="muted">Teacher / moderator sheet</div>
+    <button class="pri" id="syncBtn" style="margin-top:8px">&#8635; Sync now</button>
+    <div class="muted" id="syncMsg" style="margin-top:8px"></div>
+  </div>
+
   <div class="card" id="noSheet" style="display:none">
     <div class="err">This link is missing the sheet code.<br>Please open the upload page from the link in your sheet.</div>
   </div>
@@ -102,6 +109,7 @@ function poll(){
     if(!r || r.error){ $("err1").textContent = r && r.error ? r.error : "Could not reach the sheet."; show("err1"); return; }
     hide("err1");
     CTX = r;
+    if(r.staff){ show("staffCard"); } else { hide("staffCard"); }
     $("who").textContent = (r.student||"") + (r.subject? " • "+r.subject : "");
     if(!r.none && r.cell){
       $("cellShow").textContent = "You choose: " + r.cell;
@@ -219,6 +227,13 @@ drop.ondragover = function(e){ e.preventDefault(); drop.classList.add("over"); }
 drop.ondragleave = function(){ drop.classList.remove("over"); };
 drop.ondrop = function(e){ e.preventDefault(); drop.classList.remove("over"); fileChosen(e.dataTransfer.files[0]); };
 $("upBtn").onclick = doUpload;
+$("syncBtn").onclick = function(){
+  var b = $("syncBtn"); b.disabled = true; $("syncMsg").textContent = "Requesting…";
+  api({action:"staffsync",sid:SID}).then(function(r){
+    $("syncMsg").textContent = (r && r.msg) ? r.msg : ((r && r.error) ? r.error : "Could not request the sync.");
+    setTimeout(function(){ b.disabled = false; }, 60000);
+  }).catch(function(){ $("syncMsg").textContent = "Could not reach the sheet. Try again."; b.disabled = false; });
+};
 
 // boot
 if(!SID){ document.getElementById("noSheet").style.display="block"; }
