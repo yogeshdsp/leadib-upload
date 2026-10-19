@@ -246,7 +246,7 @@ var LBZ = (function () {
     opts = opts || {}; var DPI = opts.dpi || 160, Q = opts.q || 0.62;
     var L = window.PDFLib, N = L.PDFName, doc = await L.PDFDocument.load(bytes, { updateMetadata: false });
     var pages = doc.getPageCount(); if (!pages) return null;
-    var sz = doc.getPage(0).getSize(), capPx = Math.round(Math.max(sz.width, sz.height) / 72 * DPI);
+    var sz = doc.getPage(0).getSize(), capPx = Math.max(opts.minPx || 1600, Math.round(Math.max(sz.width, sz.height) / 72 * DPI));
     var before = bytes.length || bytes.byteLength, done = 0, list = doc.context.enumerateIndirectObjects();
     for (var x = 0; x < list.length; x++) {
       var ref = list[x][0], obj = list[x][1];
