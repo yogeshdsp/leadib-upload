@@ -75,6 +75,7 @@
     <div id="done" class="hide">
       <div class="big ok">&#10003; Uploaded</div>
       <div class="fname" id="doneName"></div>
+      <div class="muted hide" id="zMsg" style="margin-top:6px"></div>
       <button class="pri" id="againBtn">Upload another</button>
     </div>
     <div class="err hide" id="err3"></div>
@@ -134,7 +135,7 @@ function toStep2(){
 function fileChosen(f){
   if(!f) return;
   if(f.type !== "application/pdf" && !/\.pdf$/i.test(f.name)){ $("err2").textContent="Please choose a PDF file."; show("err2"); return; }
-  if(f.size > 5*1024*1024){ $("err2").textContent="File is too big (max 5 MB). Please compress the PDF (a scanner app at medium quality) or split it."; show("err2"); return; }
+  if(f.size > 5*1024*1024){ shrinkFirst(f); return; }   // [z] a big scan is made smaller here instead of being refused
   hide("err2"); theFile = f;
   var pn = previewName();
   $("fname").textContent = f.name + (pn ? "  →  " + pn : "");
@@ -146,6 +147,7 @@ function finishOk(name){
   document.querySelector("#done .big").textContent = "✓ Uploaded";
   document.querySelector("#done .big").classList.add("ok");
   $("doneName").textContent = name || "";
+  hide("zMsg");
   show("done");
 }
 function finishFail(msg){
@@ -159,20 +161,20 @@ function finishFail(msg){
 // Safari cannot always read the reply of a large upload (POST + redirect + big body) and used to show
 // "Upload failed" for uploads that had worked. So: after uploading, ask the sheet whether the chosen
 // cell now holds a file that was created since we started, and report THAT.
-function verifyUpload(startedAt, attempt){
+function verifyUpload(startedAt, attempt, sentFile){
   api({action:"check",sid:SID,tab:pickTab,cell:pickCell}).then(function(c){
-    if(c && c.linked && (!c.created || c.created >= startedAt - 10*60*1000)){ finishOk(c.filename || ""); return; }
-    if(attempt < 5){ setTimeout(function(){ verifyUpload(startedAt, attempt+1); }, 3000); return; }
+    if(c && c.linked && (!c.created || c.created >= startedAt - 10*60*1000)){ finishOk(c.filename || ""); zLater(sentFile, zIdOf(c.url), c.filename); return; }
+    if(attempt < 5){ setTimeout(function(){ verifyUpload(startedAt, attempt+1, sentFile); }, 3000); return; }
     finishFail("Could not confirm the upload. Open the sheet and check the cell before uploading again.");
   }).catch(function(){
-    if(attempt < 5){ setTimeout(function(){ verifyUpload(startedAt, attempt+1); }, 3000); return; }
+    if(attempt < 5){ setTimeout(function(){ verifyUpload(startedAt, attempt+1, sentFile); }, 3000); return; }
     finishFail("Could not confirm the upload. Open the sheet and check the cell before uploading again.");
   });
 }
 function doUpload(){
   if(!theFile) return;
   hide("step2"); show("step3"); show("busy"); hide("done"); hide("err3");
-  var startedAt = Date.now();
+  var startedAt = Date.now(), sent = theFile;
   var rd = new FileReader();
   rd.onload = function(){
     var b64 = String(rd.result).split(",")[1];
@@ -180,12 +182,144 @@ function doUpload(){
       .then(function(r){ return r.json().catch(function(){ return null; }); })
       .catch(function(){ return null; })
       .then(function(r){
-        if(r && r.success){ finishOk((r.filename || "") + (r.msReleased ? "  —  mark scheme added to your sheet" : "")); return; }
+        if(r && r.success){ finishOk((r.filename || "") + (r.msReleased ? "  —  mark scheme added to your sheet" : "")); zLater(sent, r.fileId, r.filename); return; }
         if(r && r.success === false && r.error){ finishFail(r.error); return; }
-        verifyUpload(startedAt, 0);   // reply unreadable (Safari) - check the cell instead
+        verifyUpload(startedAt, 0, sent);   // reply unreadable (Safari) - check the cell instead
       });
   };
   rd.readAsDataURL(theFile);
+}
+
+/* LeadIB PDF shrinker (19 Oct 2026). Makes a scanned PDF smaller without touching its text, vector marks or page count:
+   every big JPEG page image is capped at DPI over the page size and re-encoded (grey unless the page has red/green ink,
+   paper made white so the scan grain stops costing bytes). Needs pdf-lib (window.PDFLib).
+   lbShrink(bytes, {dpi, q}) -> Promise<{bytes, before, after, images}> or null when it would not save at least 10%. */
+var LBZ = (function () {
+  function stripExif(u8) { // PDF viewers ignore EXIF rotation; decoding must ignore it too
+    if (u8[0] !== 0xFF || u8[1] !== 0xD8) return u8;
+    var out = [u8.subarray(0, 2)], i = 2;
+    while (i + 4 <= u8.length && u8[i] === 0xFF) {
+      var m = u8[i + 1];
+      if (m === 0xDA || m === 0xD9) break; // start of scan: rest is image data
+      var len = (u8[i + 2] << 8) | u8[i + 3];
+      if (m !== 0xE1) out.push(u8.subarray(i, i + 2 + len));
+      i += 2 + len;
+    }
+    out.push(u8.subarray(i));
+    var n = 0, k; for (k = 0; k < out.length; k++) n += out[k].length;
+    var r = new Uint8Array(n), o = 0; for (k = 0; k < out.length; k++) { r.set(out[k], o); o += out[k].length; }
+    return r;
+  }
+  function canvasOf(w, h) {
+    if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+    var c = document.createElement('canvas'); c.width = w; c.height = h; return c;
+  }
+  function toJpeg(cv, q) {
+    if (cv.convertToBlob) return cv.convertToBlob({ type: 'image/jpeg', quality: q });
+    return new Promise(function (res) { cv.toBlob(res, 'image/jpeg', q); });
+  }
+  function decode(u8) {
+    var blob = new Blob([u8], { type: 'image/jpeg' });
+    if (typeof createImageBitmap === 'function') return createImageBitmap(blob).catch(function () { return viaImg(blob); });
+    return viaImg(blob);
+  }
+  function viaImg(blob) {
+    return new Promise(function (res, rej) { var url = URL.createObjectURL(blob), im = new Image(); im.onload = function () { URL.revokeObjectURL(url); res(im); }; im.onerror = function () { URL.revokeObjectURL(url); rej(new Error('jpeg decode')); }; im.src = url; });
+  }
+  function process(px) { // in place: grey + gentle paper whitening unless red/green ink is on the page; returns true when grey
+    var n = px.length / 4, step = Math.max(1, Math.floor(n / 60000)), ink = 0, seen = 0, i, r, g, b, mx, mn;
+    for (i = 0; i < n; i += step) {
+      r = px[4 * i]; g = px[4 * i + 1]; b = px[4 * i + 2]; mx = Math.max(r, g, b); mn = Math.min(r, g, b); seen++;
+      if (mx > 60 && mx - mn > 90) { if ((r === mx && g < r * 0.75) || (g === mx && r < g * 0.8 && b < g * 0.8)) ink++; } // red/pink/orange or green marker
+    }
+    if (ink / seen > 0.0015) return false;
+    var hist = new Uint32Array(256), y = new Uint8Array(n);
+    for (i = 0; i < n; i++) { var v = (px[4 * i] * 299 + px[4 * i + 1] * 587 + px[4 * i + 2] * 114) / 1000 | 0; y[i] = v; hist[v]++; }
+    function pct(p) { var t = n * p, c = 0; for (var k = 0; k < 256; k++) { c += hist[k]; if (c >= t) return k; } return 255; }
+    var wp = Math.max(200, pct(0.6) - 8), bp = Math.min(60, pct(0.01)), span = wp - bp;
+    var lut = new Uint8Array(256);
+    for (i = 0; i < 256; i++) lut[i] = span > 60 ? Math.max(0, Math.min(255, Math.round((i - bp) * 255 / span))) : i;
+    for (i = 0; i < n; i++) { var w = lut[y[i]]; px[4 * i] = w; px[4 * i + 1] = w; px[4 * i + 2] = w; }
+    return true;
+  }
+  async function shrink(bytes, opts) {
+    opts = opts || {}; var DPI = opts.dpi || 160, Q = opts.q || 0.62;
+    var L = window.PDFLib, N = L.PDFName, doc = await L.PDFDocument.load(bytes, { updateMetadata: false });
+    var pages = doc.getPageCount(); if (!pages) return null;
+    var sz = doc.getPage(0).getSize(), capPx = Math.round(Math.max(sz.width, sz.height) / 72 * DPI);
+    var before = bytes.length || bytes.byteLength, done = 0, list = doc.context.enumerateIndirectObjects();
+    for (var x = 0; x < list.length; x++) {
+      var ref = list[x][0], obj = list[x][1];
+      if (!(obj instanceof L.PDFRawStream)) continue;
+      var d = obj.dict;
+      if (d.get(N.of('Subtype')) !== N.of('Image')) continue;
+      var f = d.get(N.of('Filter')), inflate = false;
+      if (f instanceof L.PDFArray) { if (f.size() === 1) f = f.get(0); else if (f.size() === 2 && f.get(0) === N.of('FlateDecode') && f.get(1) === N.of('DCTDecode')) { inflate = true; f = N.of('DCTDecode'); } else f = null; } // pdf-lib wraps copied JPEGs in Flate
+      if (f !== N.of('DCTDecode') || /Predictor|ColorTransform/.test(String(d.get(N.of('DecodeParms')) || ''))) continue;
+      if (inflate && typeof DecompressionStream === 'undefined') continue;
+      if (d.get(N.of('SMask')) || d.get(N.of('Mask')) || d.get(N.of('Decode'))) continue;
+      var cs = d.lookup(N.of('ColorSpace'));
+      if (cs === N.of('DeviceCMYK')) continue;
+      if (cs instanceof L.PDFArray && cs.get(0) === N.of('ICCBased')) { var icc = cs.lookup(1); var nn = icc && icc.dict ? icc.dict.lookup(N.of('N')) : null; if (nn && nn.asNumber && nn.asNumber() === 4) continue; }
+      var W = d.lookup(N.of('Width')).asNumber(), H = d.lookup(N.of('Height')).asNumber();
+      if (W * H < 400 * 400) continue;
+      var stored = obj.contents, raw = stored, img;
+      try { if (inflate) raw = new Uint8Array(await new Response(new Blob([stored]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer()); img = await decode(stripExif(raw)); } catch (e) { continue; }
+      var sc = Math.min(1, capPx / Math.max(W, H)), w = Math.max(1, Math.round(W * sc)), h = Math.max(1, Math.round(H * sc));
+      var cv = canvasOf(w, h), ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h); if (img.close) img.close();
+      var id = ctx.getImageData(0, 0, w, h); process(id.data); ctx.putImageData(id, 0, 0);
+      var blob = await toJpeg(cv, Q), nb = new Uint8Array(await blob.arrayBuffer());
+      if (nb.length >= stored.length * 0.9) continue;
+      var nd = doc.context.obj({ Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceRGB', BitsPerComponent: 8, Filter: 'DCTDecode', Length: nb.length });
+      doc.context.assign(ref, L.PDFRawStream.of(nd, nb));
+      done++;
+      if (opts.onStep) opts.onStep(done);
+      await new Promise(function (r) { setTimeout(r, 0); }); // let the page breathe between images
+    }
+    if (!done) return null;
+    var out = await doc.save({ useObjectStreams: true, addDefaultPage: false, updateFieldAppearances: false });
+    if (out.length > before * 0.9) return null;
+    var chk = await L.PDFDocument.load(out, { updateMetadata: false });
+    if (chk.getPageCount() !== pages) return null; // never hand back a different document
+    return { bytes: out, before: before, after: out.length, images: done };
+  }
+  return { shrink: shrink };
+})();
+
+// ---- [z] 19 Oct 2026: smaller files in Drive. The upload itself is unchanged; once it has finished, the PDF is
+// shrunk here in the background and swapped in place (same file, same link). Only scans (AS / HW / CP).
+var PDFLIB_URL = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js", pdfLibP = null;
+function needPdfLib(){
+  if(window.PDFLib) return Promise.resolve();
+  if(!pdfLibP) pdfLibP = new Promise(function(res, rej){ var s = document.createElement("script"); s.src = PDFLIB_URL; s.onload = res; s.onerror = function(){ pdfLibP = null; rej(new Error("pdf-lib")); }; document.head.appendChild(s); });
+  return pdfLibP;
+}
+function zIdOf(url){ var m = String(url || "").match(/\/d\/([\w-]{20,})/) || String(url || "").match(/[?&]id=([\w-]{20,})/); return m ? m[1] : ""; }
+function u8ToB64(u8){ var s = "", CH = 0x8000; for(var i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return btoa(s); }
+function zLater(file, fileId, name){
+  if(!file || !fileId || file.size < 600*1024 || !/_(AS|HW|CP|AICP)\.pdf$/i.test(String(name || ""))) return;
+  setTimeout(function(){
+    needPdfLib().then(function(){ return file.arrayBuffer(); }).then(function(buf){
+      return LBZ.shrink(new Uint8Array(buf), { dpi: 160, q: 0.62 });
+    }).then(function(r){
+      if(!r) return;
+      return api({ action: "zput", sid: SID, fileId: fileId, data: u8ToB64(r.bytes) }).then(function(res){
+        if(res && res.ok && $("zMsg")){ $("zMsg").textContent = "Saved storage space: " + (res.before/1048576).toFixed(1) + " MB → " + (res.after/1048576).toFixed(1) + " MB"; show("zMsg"); }
+      });
+    }).catch(function(){ /* the file stays as uploaded - nothing for the student to do */ });
+  }, 300);
+}
+function shrinkFirst(f){
+  $("fname").textContent = f.name + "  —  large file, making it smaller first…"; show("fname"); hide("upBtn"); hide("err2");
+  needPdfLib().then(function(){ return f.arrayBuffer(); }).then(function(buf){ return LBZ.shrink(new Uint8Array(buf), { dpi: 160, q: 0.62 }); }).then(function(r){
+    if(r && r.after <= 5*1024*1024){
+      theFile = new File([r.bytes], f.name, { type: "application/pdf" });
+      var pn = previewName();
+      $("fname").textContent = f.name + " (" + (r.before/1048576).toFixed(1) + " MB → " + (r.after/1048576).toFixed(1) + " MB)" + (pn ? "  →  " + pn : "");
+      show("upBtn"); return;
+    }
+    hide("fname"); $("err2").textContent = "File is too big (max 5 MB). Please compress the PDF (a scanner app at medium quality) or split it."; show("err2");
+  }).catch(function(){ hide("fname"); $("err2").textContent = "File is too big (max 5 MB). Please compress the PDF (a scanner app at medium quality) or split it."; show("err2"); });
 }
 
 // wiring
